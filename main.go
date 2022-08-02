@@ -10,7 +10,7 @@ func main() {
 
 	cs := k8sClient.GetClient()
 
-	err := cronjobInformer.WatchCronjobPods(cs)
+	err := cronjobInformer.WatchCronjobs(cs)
 
 	if err != nil {
 		// fmt.Printf("watchCronjobs err: %s\n", err)

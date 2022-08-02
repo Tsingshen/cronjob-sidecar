@@ -1,28 +1,67 @@
 package cronjobInformer
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	batchbeta1 "k8s.io/api/batch/v1beta1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 )
 
-func WatchCronjobPods(cs *kubernetes.Clientset) error {
+func WatchCronjobs(cs *kubernetes.Clientset) error {
 	informersFactory := informers.NewSharedInformerFactory(cs, time.Second*30)
 	cronjobInformer := informersFactory.Batch().V1beta1().CronJobs()
 
 	cronjobInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			cronjob := obj.(*batchbeta1.CronJob)
-			c := AddSidecarQuitScript(cronjob)
-			log.Printf("%v\n", c)
+			templateAnno := cronjob.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations
+			if templateAnno != nil {
+				if templateAnno["sidecar.istio.io/inject"] == "true" {
+					if cronjob.Namespace == "shencq" {
+						c, changed := AddSidecarQuitScript(cronjob)
+						if changed {
+							err := updateCronjob(cs, c)
+							if err != nil {
+								log.Printf("updateCronjob error: %v\n", err)
+							}
+						}
+					}
+				}
+			}
 		},
-		UpdateFunc: func(oldObj, newObj interface{}) {},
-		DeleteFunc: func(obj interface{}) {},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldCronjob := oldObj.(*batchbeta1.CronJob)
+			newCronjob := newObj.(*batchbeta1.CronJob)
+
+			oldAnno := oldCronjob.Annotations
+			newAnno := newCronjob.Annotations
+
+			oldTempAnno := oldCronjob.Spec.JobTemplate.Spec.Template.Annotations
+			newTempAnno := newCronjob.Spec.JobTemplate.Spec.Template.Annotations
+
+			if !checkAnno(oldAnno, "app.lzwk.com/sidecar-cronjob", "yes") && !checkAnno(newAnno, "app.lzwk.com/sidecar-cronjob", "yes") {
+				if checkSidecarInject(oldTempAnno, newTempAnno) {
+					if oldCronjob.Namespace == "shencq" {
+						c, changed := AddSidecarQuitScript(newCronjob)
+						if changed {
+							err := updateCronjob(cs, c)
+							if err != nil {
+								log.Printf("updateCronjob error: %v\n", err)
+							}
+						}
+					}
+				}
+
+			}
+
+		},
 	})
 
 	stopCh := make(chan struct{})
@@ -38,25 +77,62 @@ func WatchCronjobPods(cs *kubernetes.Clientset) error {
 
 }
 
-func AddSidecarQuitScript(j *batchbeta1.CronJob) *batchbeta1.CronJob {
+func checkSidecarInject(oldTempAnno, newTempAnno map[string]string) bool {
 
-	sidecarQuitCmd := fmt.Sprintf(`
-for i in {1..5};do
-  echo $i
-done
-`)
+	if newTempAnno == nil {
+		return false
+	}
 
-	var appCommand []string
-	var appArgs []string
+	if newTempAnno["sidecar.istio.io/inject"] == "true" {
+		if oldTempAnno == nil {
+			return true
+		}
+
+		if oldTempAnno["sidecar.istio.io/inject"] == "false" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func checkAnno(anno map[string]string, key, value string) bool {
+
+	if anno == nil {
+		return false
+	}
+
+	if anno[key] == value {
+		return true
+	}
+
+	return false
+}
+
+func AddSidecarQuitScript(j *batchbeta1.CronJob) (*batchbeta1.CronJob, bool) {
+
+	anno := j.Annotations
+
+	if anno != nil {
+		if anno["app.lzwk.com/sidecar-cronjob"] == "yes" {
+			return j, false
+		}
+	}
+
+	sidecarQuitCmd := `trap "curl --max-time 2 -sS -f -XPOST http://127.0.0.1:15000/quitquitquit" EXIT;while ! curl -s -f http://127.0.0.1:15021/healthz/ready;do sleep 1;done;sleep 2`
+
+	var appCommand string
+	var appArgs string
 
 	for _, c := range j.Spec.JobTemplate.Spec.Template.Spec.Containers {
 		if c.Name == "app" {
 			if c.Command != nil {
-				appCommand = append(appCommand, c.Command...)
+				appCommand = strings.Join(c.Command, " ")
+				sidecarQuitCmd = sidecarQuitCmd + ";" + appCommand
 			}
-
 			if c.Args != nil {
-				appArgs = append(appArgs, c.Args...)
+				appArgs = strings.Join(c.Args, " ")
+				sidecarQuitCmd = sidecarQuitCmd + ";" + appArgs
 			}
 		}
 	}
@@ -67,15 +143,37 @@ done
 		sidecarQuitCmd,
 	}
 
-	newCmd = append(newCmd, appCommand...)
-	newCmd = append(newCmd, appArgs...)
-
-	for _, v := range j.Spec.JobTemplate.Spec.Template.Spec.Containers {
+	for k, v := range j.Spec.JobTemplate.Spec.Template.Spec.Containers {
 		if v.Name == "app" {
-			v.Command = newCmd
+			j.Spec.JobTemplate.Spec.Template.Spec.Containers[k].Command = newCmd
+			j.Spec.JobTemplate.Spec.Template.Spec.Containers[k].Args = nil
+
+			if anno == nil {
+				anno = make(map[string]string)
+			}
+
+			anno["app.lzwk.com/sidecar-cronjob"] = "yes"
 		}
 	}
 
-	fmt.Printf("print newCmd = %v\n", newCmd)
-	return j
+	log.Printf("Add cronjob = %s.%s sidecar quit script\n", j.Namespace, j.Name)
+
+	return j, true
+}
+
+func updateCronjob(cs *kubernetes.Clientset, c *batchbeta1.CronJob) error {
+	if c != nil {
+
+		_, err := cs.BatchV1beta1().CronJobs(c.Namespace).Update(context.Background(), c, metav1.UpdateOptions{})
+
+		if err != nil {
+			return err
+		}
+		log.Printf("Updated cronjob = %s.%s completed\n", c.Namespace, c.Name)
+		return nil
+
+	}
+
+	return fmt.Errorf("updateCronjob, args == nil, please check")
+
 }
