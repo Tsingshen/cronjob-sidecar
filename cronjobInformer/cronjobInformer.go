@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,15 +18,17 @@ import (
 func WatchCronjobs(cs *kubernetes.Clientset) error {
 	informersFactory := informers.NewSharedInformerFactory(cs, time.Second*30)
 	cronjobInformer := informersFactory.Batch().V1beta1().CronJobs()
+	nsReg := regexp.MustCompile(`beta1|shencq`)
 
 	cronjobInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			cronjob := obj.(*batchbeta1.CronJob)
 			templateAnno := cronjob.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations
-			if cronjob.Namespace == "beta1" {
-				if templateAnno != nil {
-					if !checkAnno(cronjob.Annotations, "app.lzwk.com/sidecar-cronjob", "yes") {
-						if templateAnno["sidecar.istio.io/inject"] == "true" {
+			if templateAnno != nil {
+				if !checkAnno(cronjob.Annotations, "app.lzwk.com/sidecar-cronjob", "yes") {
+					if templateAnno["sidecar.istio.io/inject"] == "true" {
+						if nsReg.MatchString(cronjob.Namespace) {
+							log.Printf("INFO: add cronjob %s.%s\n", cronjob.Namespace, cronjob.Name)
 							c, changed := AddSidecarQuitScript(cronjob)
 							if changed {
 								err := updateCronjob(cs, c)
@@ -33,6 +36,7 @@ func WatchCronjobs(cs *kubernetes.Clientset) error {
 									log.Printf("updateCronjob error: %v\n", err)
 								}
 							}
+
 						}
 					}
 				}
@@ -48,9 +52,10 @@ func WatchCronjobs(cs *kubernetes.Clientset) error {
 			oldTempAnno := oldCronjob.Spec.JobTemplate.Spec.Template.Annotations
 			newTempAnno := newCronjob.Spec.JobTemplate.Spec.Template.Annotations
 
-			if oldCronjob.Namespace == "beta1" {
-				if !checkAnno(oldAnno, "app.lzwk.com/sidecar-cronjob", "yes") && !checkAnno(newAnno, "app.lzwk.com/sidecar-cronjob", "yes") {
-					if checkSidecarInject(oldTempAnno, newTempAnno) {
+			if !checkAnno(oldAnno, "app.lzwk.com/sidecar-cronjob", "yes") && !checkAnno(newAnno, "app.lzwk.com/sidecar-cronjob", "yes") {
+				if checkSidecarInject(oldTempAnno, newTempAnno) {
+					if nsReg.MatchString(oldCronjob.Namespace) {
+						log.Printf("INFO: Update cronjob %s.%s\n", oldCronjob.Namespace, oldCronjob.Name)
 						c, changed := AddSidecarQuitScript(newCronjob)
 						if changed {
 							err := updateCronjob(cs, c)
@@ -60,9 +65,7 @@ func WatchCronjobs(cs *kubernetes.Clientset) error {
 						}
 					}
 				}
-
 			}
-
 		},
 	})
 
@@ -86,13 +89,10 @@ func checkSidecarInject(oldTempAnno, newTempAnno map[string]string) bool {
 	}
 
 	if newTempAnno["sidecar.istio.io/inject"] == "true" {
-		if oldTempAnno == nil {
+		if oldTempAnno == nil || oldTempAnno["sidecar.istio.io/inject"] == "false" {
 			return true
 		}
 
-		if oldTempAnno["sidecar.istio.io/inject"] == "false" {
-			return true
-		}
 	}
 
 	return false
@@ -116,7 +116,9 @@ func AddSidecarQuitScript(j *batchbeta1.CronJob) (*batchbeta1.CronJob, bool) {
 	anno := j.Annotations
 
 	if anno != nil {
-		return j, false
+		if anno["app.lzwk.com/sidecar-cronjob"] == "yes" {
+			return j, false
+		}
 	}
 
 	sidecarQuitCmd := `trap "curl --max-time 2 -sS -f -XPOST http://127.0.0.1:15000/quitquitquit" EXIT;while ! curl -s -f http://127.0.0.1:15021/healthz/ready;do sleep 1;done;sleep 2`
@@ -132,7 +134,7 @@ func AddSidecarQuitScript(j *batchbeta1.CronJob) (*batchbeta1.CronJob, bool) {
 			}
 			if c.Args != nil {
 				appArgs = strings.Join(c.Args, " ")
-				sidecarQuitCmd = sidecarQuitCmd + ";" + appArgs
+				sidecarQuitCmd = sidecarQuitCmd + " " + appArgs
 			}
 		}
 	}
