@@ -22,14 +22,16 @@ func WatchCronjobs(cs *kubernetes.Clientset) error {
 		AddFunc: func(obj interface{}) {
 			cronjob := obj.(*batchbeta1.CronJob)
 			templateAnno := cronjob.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations
-			if templateAnno != nil {
-				if templateAnno["sidecar.istio.io/inject"] == "true" {
-					if cronjob.Namespace == "shencq" {
-						c, changed := AddSidecarQuitScript(cronjob)
-						if changed {
-							err := updateCronjob(cs, c)
-							if err != nil {
-								log.Printf("updateCronjob error: %v\n", err)
+			if cronjob.Namespace == "beta1" {
+				if templateAnno != nil {
+					if !checkAnno(cronjob.Annotations, "app.lzwk.com/sidecar-cronjob", "yes") {
+						if templateAnno["sidecar.istio.io/inject"] == "true" {
+							c, changed := AddSidecarQuitScript(cronjob)
+							if changed {
+								err := updateCronjob(cs, c)
+								if err != nil {
+									log.Printf("updateCronjob error: %v\n", err)
+								}
 							}
 						}
 					}
@@ -46,9 +48,9 @@ func WatchCronjobs(cs *kubernetes.Clientset) error {
 			oldTempAnno := oldCronjob.Spec.JobTemplate.Spec.Template.Annotations
 			newTempAnno := newCronjob.Spec.JobTemplate.Spec.Template.Annotations
 
-			if !checkAnno(oldAnno, "app.lzwk.com/sidecar-cronjob", "yes") && !checkAnno(newAnno, "app.lzwk.com/sidecar-cronjob", "yes") {
-				if checkSidecarInject(oldTempAnno, newTempAnno) {
-					if oldCronjob.Namespace == "shencq" {
+			if oldCronjob.Namespace == "beta1" {
+				if !checkAnno(oldAnno, "app.lzwk.com/sidecar-cronjob", "yes") && !checkAnno(newAnno, "app.lzwk.com/sidecar-cronjob", "yes") {
+					if checkSidecarInject(oldTempAnno, newTempAnno) {
 						c, changed := AddSidecarQuitScript(newCronjob)
 						if changed {
 							err := updateCronjob(cs, c)
@@ -114,9 +116,7 @@ func AddSidecarQuitScript(j *batchbeta1.CronJob) (*batchbeta1.CronJob, bool) {
 	anno := j.Annotations
 
 	if anno != nil {
-		if anno["app.lzwk.com/sidecar-cronjob"] == "yes" {
-			return j, false
-		}
+		return j, false
 	}
 
 	sidecarQuitCmd := `trap "curl --max-time 2 -sS -f -XPOST http://127.0.0.1:15000/quitquitquit" EXIT;while ! curl -s -f http://127.0.0.1:15021/healthz/ready;do sleep 1;done;sleep 2`
