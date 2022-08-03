@@ -1,7 +1,8 @@
 package main
 
 import (
-	"cronjob-sidecar/cronjobInformer"
+	cronjobinformer "cronjob-sidecar/cronjobInformer"
+	"log"
 
 	k8sClient "github.com/Tsingshen/k8scrd/client"
 )
@@ -10,7 +11,8 @@ func main() {
 
 	cs := k8sClient.GetClient()
 
-	err := cronjobInformer.WatchCronjobs(cs)
+	log.Println("Cronjob with sidecar watcher starts running")
+	err := cronjobinformer.WatchCronjobs(cs)
 
 	if err != nil {
 		// fmt.Printf("watchCronjobs err: %s\n", err)
