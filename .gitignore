@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+cronjob-sidecar*
 
 # Test binary, built with `go test -c`
 *.test

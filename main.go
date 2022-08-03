@@ -1,7 +1,7 @@
 package main
 
 import (
-	cronjobinformer "cronjob-sidecar/cronjobInformer"
+	"cronjob-sidecar/cronjobinformer"
 	"log"
 
 	k8sClient "github.com/Tsingshen/k8scrd/client"
