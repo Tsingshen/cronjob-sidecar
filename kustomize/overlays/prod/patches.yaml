@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cronjob-sidecar
+spec:
+  template:
+    spec:
+      containers:
+      - name: cronjob-sidecar
+        env:
+        - name: WATCH_NS
+          value: "t503"
