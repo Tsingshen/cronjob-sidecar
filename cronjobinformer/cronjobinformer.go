@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -18,7 +19,11 @@ import (
 func WatchCronjobs(cs *kubernetes.Clientset) error {
 	informersFactory := informers.NewSharedInformerFactory(cs, time.Second*30)
 	cronjobInformer := informersFactory.Batch().V1beta1().CronJobs()
-	nsReg := regexp.MustCompile(`beta1|shencq`)
+	watchNs := os.Getenv("WATCH_NS")
+	nsReg := regexp.MustCompile(`shencq`)
+	if watchNs != "" {
+		nsReg = regexp.MustCompile(watchNs)
+	}
 
 	cronjobInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
