@@ -10,6 +10,6 @@ patchesStrategicMerge:
 images:
 - name: cronjob_sidecar_image
   newName: ccr.ccs.tencentyun.com/lzwk/ci-cd-tools
-  newTag: dev-sidecar-cronjob-watcher-v0.0.5
+  newTag: dev-sidecar-cronjob-watcher-v0.0.6
 
 

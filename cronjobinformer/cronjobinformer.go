@@ -86,20 +86,40 @@ func WatchCronjobs(cs *kubernetes.Clientset) error {
 				}
 			}
 
+			// add sidecar quit script
 			if !checkCmd(oldCmd, matchStr) && !checkCmd(newCmd, matchStr) {
 				if checkSidecarInject(oldTempAnno, newTempAnno) {
 					if nsReg.MatchString(oldCronjob.Namespace) {
-						log.Printf("INFO: Update cronjob %s.%s\n", oldCronjob.Namespace, oldCronjob.Name)
+						log.Printf("INFO: Add cronjob sidecar quit script %s.%s\n", oldCronjob.Namespace, oldCronjob.Name)
 						c, changed := AddSidecarQuitScript(newCronjob)
 						if changed {
 							err := updateCronjob(cs, c)
 							if err != nil {
-								log.Printf("updateCronjob error: %v\n", err)
+								log.Printf("update cronjob error: %v\n", err)
 							}
 						}
 					}
 				}
 			}
+
+			// remove sidecar quit script
+			if checkCmd(oldCmd, matchStr) && checkCmd(newCmd, matchStr) {
+				if checkSidecarUnInject(oldTempAnno, newTempAnno) {
+					if nsReg.MatchString(oldCronjob.Namespace) {
+						log.Printf("INFO: Remove cronjob sidecar quit script %s.%s\n", oldCronjob.Namespace, oldCronjob.Name)
+						c, ok := RemoveSidecarQuitScript(newCronjob)
+						if ok {
+							err := updateCronjob(cs, c)
+							if err != nil {
+								log.Printf("update cronjob error: %v\n", err)
+							}
+						}
+
+					}
+
+				}
+			}
+
 		},
 	})
 
@@ -114,6 +134,22 @@ func WatchCronjobs(cs *kubernetes.Clientset) error {
 
 	return nil
 
+}
+
+func checkSidecarUnInject(oldTempAnno, newTempAnno map[string]string) bool {
+
+	if newTempAnno == nil {
+		return false
+	}
+
+	if newTempAnno["sidecar.istio.io/inject"] == "false" {
+		if oldTempAnno == nil || oldTempAnno["sidecar.istio.io/inject"] == "true" {
+			return true
+		}
+
+	}
+
+	return false
 }
 
 func checkSidecarInject(oldTempAnno, newTempAnno map[string]string) bool {
@@ -141,6 +177,47 @@ func checkCmd(cmd string, str string) bool {
 	reg := regexp.MustCompile(str)
 	return reg.MatchString(cmd)
 
+}
+
+func RemoveSidecarQuitScript(j *batchbeta1.CronJob) (*batchbeta1.CronJob, bool) {
+
+	sidecarQuitCmd := `trap "curl --max-time 2 -sS -f -XPOST http://127.0.0.1:15000/quitquitquit" EXIT;while ! curl -s -f http://127.0.0.1:15021/healthz/ready;do sleep 1;done;sleep 2`
+
+	var appCommand string
+
+	newCmd := []string{}
+
+	for _, c := range j.Spec.JobTemplate.Spec.Template.Spec.Containers {
+		if c.Name == "app" {
+			if c.Command != nil {
+				if c.Command[0] == "/bin/bash" && c.Command[1] == "-c" ||
+					c.Command[0] == "/bin/sh" && c.Command[1] == "-c" ||
+					c.Command[0] == "sh" && c.Command[1] == "-c" {
+					appCommand = c.Command[2]
+
+					_, b, ok := strings.Cut(appCommand, sidecarQuitCmd+";")
+
+					if ok {
+						appCommand = b
+					}
+
+					c.Command[2] = appCommand
+					newCmd = c.Command
+				}
+			}
+		}
+	}
+
+	for k, v := range j.Spec.JobTemplate.Spec.Template.Spec.Containers {
+		if v.Name == "app" {
+			j.Spec.JobTemplate.Spec.Template.Spec.Containers[k].Command = newCmd
+			j.Spec.JobTemplate.Spec.Template.Spec.Containers[k].Args = nil
+		}
+	}
+
+	log.Printf("Remove cronjob = %s.%s sidecar quit script\n", j.Namespace, j.Name)
+
+	return j, true
 }
 
 func AddSidecarQuitScript(j *batchbeta1.CronJob) (*batchbeta1.CronJob, bool) {
