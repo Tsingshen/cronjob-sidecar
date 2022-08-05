@@ -150,28 +150,47 @@ func AddSidecarQuitScript(j *batchbeta1.CronJob) (*batchbeta1.CronJob, bool) {
 	var appCommand string
 	var appArgs string
 
+	newCmd := []string{}
+
 	for _, c := range j.Spec.JobTemplate.Spec.Template.Spec.Containers {
 		if c.Name == "app" {
 			if c.Command != nil {
+				if c.Command[0] == "/bin/bash" && c.Command[1] == "-c" ||
+					c.Command[0] == "/bin/sh" && c.Command[1] == "-c" ||
+					c.Command[0] == "sh" && c.Command[1] == "-c" {
+					appCommand = c.Command[2]
+					c.Command[2] = sidecarQuitCmd + ";" + appCommand
+					newCmd = c.Command
+					break
+				}
 				appCommand = strings.Join(c.Command, " ")
 				sidecarQuitCmd = sidecarQuitCmd + ";" + appCommand
+				newCmd = []string{
+					"/bin/sh",
+					"-c",
+					sidecarQuitCmd,
+				}
 				if c.Args != nil {
 					appArgs = strings.Join(c.Args, " ")
 					sidecarQuitCmd = sidecarQuitCmd + " " + appArgs
+					newCmd = []string{
+						"/bin/sh",
+						"-c",
+						sidecarQuitCmd,
+					}
 					break
 				}
 			}
 			if c.Args != nil {
 				appArgs = strings.Join(c.Args, " ")
 				sidecarQuitCmd = sidecarQuitCmd + ";" + appArgs
+				newCmd = []string{
+					"/bin/sh",
+					"-c",
+					sidecarQuitCmd,
+				}
 			}
 		}
-	}
-
-	newCmd := []string{
-		"/bin/sh",
-		"-c",
-		sidecarQuitCmd,
 	}
 
 	for k, v := range j.Spec.JobTemplate.Spec.Template.Spec.Containers {
