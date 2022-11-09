@@ -183,41 +183,27 @@ func RemoveSidecarQuitScript(j *batchbeta1.CronJob) (*batchbeta1.CronJob, bool) 
 
 	sidecarQuitCmd := `trap "curl --max-time 2 -sS -f -XPOST http://127.0.0.1:15000/quitquitquit" EXIT;while ! curl -s -f http://127.0.0.1:15021/healthz/ready;do sleep 1;done;sleep 2`
 
-	var appCommand string
-
-	newCmd := []string{}
-
 	for _, c := range j.Spec.JobTemplate.Spec.Template.Spec.Containers {
 		if c.Name == "app" {
-			if c.Command != nil {
+			if c.Command != nil && c.Args == nil {
 				if c.Command[0] == "/bin/bash" && c.Command[1] == "-c" ||
 					c.Command[0] == "/bin/sh" && c.Command[1] == "-c" ||
 					c.Command[0] == "sh" && c.Command[1] == "-c" {
-					appCommand = c.Command[2]
 
-					_, b, ok := strings.Cut(appCommand, sidecarQuitCmd+";")
+					_, b, ok := strings.Cut(c.Command[2], sidecarQuitCmd+";")
 
 					if ok {
-						appCommand = b
+						c.Command[2] = b
+						log.Printf("Remove cronjob = %s.%s sidecar quit script\n", j.Namespace, j.Name)
+						return j, true
 					}
 
-					c.Command[2] = appCommand
-					newCmd = c.Command
 				}
 			}
 		}
 	}
+	return nil, false
 
-	for k, v := range j.Spec.JobTemplate.Spec.Template.Spec.Containers {
-		if v.Name == "app" {
-			j.Spec.JobTemplate.Spec.Template.Spec.Containers[k].Command = newCmd
-			j.Spec.JobTemplate.Spec.Template.Spec.Containers[k].Args = nil
-		}
-	}
-
-	log.Printf("Remove cronjob = %s.%s sidecar quit script\n", j.Namespace, j.Name)
-
-	return j, true
 }
 
 func AddSidecarQuitScript(j *batchbeta1.CronJob) (*batchbeta1.CronJob, bool) {
@@ -273,6 +259,7 @@ func AddSidecarQuitScript(j *batchbeta1.CronJob) (*batchbeta1.CronJob, bool) {
 	for k, v := range j.Spec.JobTemplate.Spec.Template.Spec.Containers {
 		if v.Name == "app" {
 			j.Spec.JobTemplate.Spec.Template.Spec.Containers[k].Command = newCmd
+			// args have been added into commands
 			j.Spec.JobTemplate.Spec.Template.Spec.Containers[k].Args = nil
 		}
 	}
