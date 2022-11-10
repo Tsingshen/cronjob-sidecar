@@ -46,7 +46,7 @@ func WatchCronjobs(cs *kubernetes.Clientset) error {
 				if templateAnno["sidecar.istio.io/inject"] == "true" {
 					if !checkCmd(cmd, matchStr) {
 						if nsReg.MatchString(cronjob.Namespace) {
-							log.Printf("INFO: add cronjob %s.%s\n", cronjob.Namespace, cronjob.Name)
+							log.Printf("INFO: AddFunc add cronjob %s.%s\n", cronjob.Namespace, cronjob.Name)
 							c, changed := AddSidecarQuitScript(cronjob)
 							if changed {
 								err := updateCronjob(cs, c)
@@ -77,12 +77,18 @@ func WatchCronjobs(cs *kubernetes.Clientset) error {
 			for _, c := range oldC {
 				if c.Name == "app" {
 					oldCmd = strings.Join(c.Command, " ")
+					if c.Args != nil {
+						oldCmd = oldCmd + " " + strings.Join(c.Args, " ")
+					}
 				}
 			}
 
 			for _, c := range newC {
 				if c.Name == "app" {
 					newCmd = strings.Join(c.Command, " ")
+					if c.Args != nil {
+						newCmd = newCmd + " " + strings.Join(c.Args, " ")
+					}
 				}
 			}
 
@@ -90,7 +96,7 @@ func WatchCronjobs(cs *kubernetes.Clientset) error {
 			if !checkCmd(oldCmd, matchStr) && !checkCmd(newCmd, matchStr) {
 				if checkSidecarInject(oldTempAnno, newTempAnno) {
 					if nsReg.MatchString(oldCronjob.Namespace) {
-						log.Printf("INFO: Add cronjob sidecar quit script %s.%s\n", oldCronjob.Namespace, oldCronjob.Name)
+						log.Printf("INFO: UpdateFunc add cronjob sidecar quit script %s.%s\n", oldCronjob.Namespace, oldCronjob.Name)
 						c, changed := AddSidecarQuitScript(newCronjob)
 						if changed {
 							err := updateCronjob(cs, c)
@@ -186,18 +192,19 @@ func RemoveSidecarQuitScript(j *batchbeta1.CronJob) (*batchbeta1.CronJob, bool) 
 	for _, c := range j.Spec.JobTemplate.Spec.Template.Spec.Containers {
 		if c.Name == "app" {
 			if c.Command != nil && c.Args == nil {
-				if c.Command[0] == "/bin/bash" && c.Command[1] == "-c" ||
-					c.Command[0] == "/bin/sh" && c.Command[1] == "-c" ||
-					c.Command[0] == "sh" && c.Command[1] == "-c" {
+				if len(c.Command) > 2 {
+					if c.Command[0] == "/bin/bash" && c.Command[1] == "-c" ||
+						c.Command[0] == "/bin/sh" && c.Command[1] == "-c" ||
+						c.Command[0] == "sh" && c.Command[1] == "-c" {
 
-					_, b, ok := strings.Cut(c.Command[2], sidecarQuitCmd+";")
+						_, b, ok := strings.Cut(c.Command[2], sidecarQuitCmd+";")
 
-					if ok {
-						c.Command[2] = b
-						log.Printf("Remove cronjob = %s.%s sidecar quit script\n", j.Namespace, j.Name)
-						return j, true
+						if ok {
+							c.Command[2] = b
+							log.Printf("Remove cronjob = %s.%s sidecar quit script\n", j.Namespace, j.Name)
+							return j, true
+						}
 					}
-
 				}
 			}
 		}
@@ -208,51 +215,93 @@ func RemoveSidecarQuitScript(j *batchbeta1.CronJob) (*batchbeta1.CronJob, bool) 
 
 func AddSidecarQuitScript(j *batchbeta1.CronJob) (*batchbeta1.CronJob, bool) {
 
-	sidecarQuitCmd := `trap "curl --max-time 2 -sS -f -XPOST http://127.0.0.1:15000/quitquitquit" EXIT;while ! curl -s -f http://127.0.0.1:15021/healthz/ready;do sleep 1;done;sleep 2`
-
-	var appCommand string
-	var appArgs string
+	const sidecarQuitCmd = `trap "curl --max-time 2 -sS -f -XPOST http://127.0.0.1:15000/quitquitquit" EXIT;while ! curl -s -f http://127.0.0.1:15021/healthz/ready;do sleep 1;done;sleep 2`
 
 	newCmd := []string{}
 
 	for _, c := range j.Spec.JobTemplate.Spec.Template.Spec.Containers {
 		if c.Name == "app" {
-			if c.Command != nil {
-				if c.Command[0] == "/bin/bash" && c.Command[1] == "-c" ||
-					c.Command[0] == "/bin/sh" && c.Command[1] == "-c" ||
-					c.Command[0] == "sh" && c.Command[1] == "-c" {
-					appCommand = c.Command[2]
-					c.Command[2] = sidecarQuitCmd + ";" + appCommand
-					newCmd = c.Command
-					break
-				}
-				appCommand = strings.Join(c.Command, " ")
-				sidecarQuitCmd = sidecarQuitCmd + ";" + appCommand
-				newCmd = []string{
-					"/bin/sh",
-					"-c",
-					sidecarQuitCmd,
-				}
-				if c.Args != nil {
-					appArgs = strings.Join(c.Args, " ")
-					sidecarQuitCmd = sidecarQuitCmd + " " + appArgs
+			if c.Command != nil && c.Args != nil {
+				if len(c.Command) >= 2 {
+					if c.Command[0] == "/bin/bash" && c.Command[1] == "-c" ||
+						c.Command[0] == "/bin/sh" && c.Command[1] == "-c" ||
+						c.Command[0] == "sh" && c.Command[1] == "-c" {
+						appArgs := strings.Join(c.Args, " ")
+						if len(c.Command) == 2 {
+							finalCmd := sidecarQuitCmd + ";" + appArgs
+							c.Command = append(c.Command, finalCmd)
+							newCmd = c.Command
+						} else {
+							c.Command[2] = sidecarQuitCmd + ";" + strings.Join(c.Command[2:], " ") + " " + appArgs
+							newCmd = c.Command[:3]
+						}
+					} else {
+						newCmd = []string{
+							"/bin/sh",
+							"-c",
+							sidecarQuitCmd + ";" + strings.Join(c.Command, " "),
+						}
+					}
+				} else {
+					appCommand := strings.Join(c.Command, " ")
+					appArgs := strings.Join(c.Args, " ")
+					quitCmdStr := sidecarQuitCmd + ";" + appCommand + " " + appArgs
 					newCmd = []string{
 						"/bin/sh",
 						"-c",
-						sidecarQuitCmd,
+						quitCmdStr,
 					}
-					break
 				}
+				break
 			}
-			if c.Args != nil {
-				appArgs = strings.Join(c.Args, " ")
-				sidecarQuitCmd = sidecarQuitCmd + ";" + appArgs
+
+			if c.Command != nil && c.Args == nil {
+				if len(c.Command) >= 2 {
+					if c.Command[0] == "/bin/bash" && c.Command[1] == "-c" ||
+						c.Command[0] == "/bin/sh" && c.Command[1] == "-c" ||
+						c.Command[0] == "sh" && c.Command[1] == "-c" {
+						if len(c.Command) == 2 {
+							newCmd = c.Command
+						} else {
+							c.Command[2] = sidecarQuitCmd + ";" + strings.Join(c.Command[2:], " ")
+							newCmd = c.Command[:3]
+						}
+					} else {
+						newCmd = []string{
+							"/bin/sh",
+							"-c",
+							sidecarQuitCmd + ";" + strings.Join(c.Command, " "),
+						}
+					}
+				} else {
+					appCommand := strings.Join(c.Command, " ")
+					quitCmdStr := sidecarQuitCmd + ";" + appCommand
+					newCmd = []string{
+						"/bin/sh",
+						"-c",
+						quitCmdStr,
+					}
+				}
+				break
+			}
+
+			if c.Command == nil && c.Args != nil {
+				appArgs := strings.Join(c.Args, " ")
+				quitCmdStr := sidecarQuitCmd + ";" + appArgs
 				newCmd = []string{
 					"/bin/sh",
 					"-c",
-					sidecarQuitCmd,
+					quitCmdStr,
 				}
+				break
 			}
+
+			if c.Command == nil && c.Args == nil {
+
+				log.Printf("Do nothing, cronjob = %s.%s no command and args\n", j.Namespace, j.Name)
+				return j, true
+			}
+
 		}
 	}
 
